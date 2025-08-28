@@ -1,0 +1,7 @@
+node_modules
+# Appium asset folders to exclude from source control
+downloads
+screenshots
+videos
+reports
+app-release.apk

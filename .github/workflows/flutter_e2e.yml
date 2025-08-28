@@ -1,0 +1,45 @@
+name: Flutter E2E Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  e2e-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Start Appium
+        run: |
+          npm install -g appium
+          appium &
+
+      - name: Run E2E Tests
+        env:
+          PLATFORM: "Android"
+          DEVICE_NAME: "emulator-5554"
+          APP_PATH: "./app-release.apk"
+        run: npm test
+
+      - name: Upload Mochawesome Report
+        uses: actions/upload-artifact@v3
+        with:
+          name: mochawesome-report
+          path: mochawesome-report/
+
+      - name: Upload Screenshots
+        uses: actions/upload-artifact@v3
+        with:
+          name: screenshots
+          path: screenshots/
