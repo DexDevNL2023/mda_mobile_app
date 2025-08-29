@@ -14,7 +14,7 @@ e2e_tests:
     - appium &
     - export PLATFORM=Android
     - export DEVICE_NAME=emulator-5554
-    - export APP_PATH=./app-release.apk
+    - export APP_PATH=./mda_test_release_1_0_3.apk
     - npm test
   artifacts:
     paths:
