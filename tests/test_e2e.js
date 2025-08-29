@@ -1,49 +1,99 @@
-// tests/test_e2e.js
-
+require("dotenv").config(); // 🔹 Charger les variables d'environnement
 const { remote } = require("webdriverio");
 const { assert } = require("chai");
 const fs = require("fs");
-const { addContext } = require("mochawesome/addContext");
 const path = require("path");
+const { addContext } = require("mochawesome/addContext");
 
-// Crée le dossier screenshots si nécessaire
+// -------------------------
+// Dossier screenshots
+// -------------------------
 const screenshotsDir = path.resolve(__dirname, "../screenshots");
 if (!fs.existsSync(screenshotsDir)) fs.mkdirSync(screenshotsDir);
 
-const opts = {
-  hostname: process.env.APPIUM_HOST || "127.0.0.1",
-  port: parseInt(process.env.APPIUM_PORT, 10) || 4723,
-  path: process.env.APPIUM_PATH || "/wd/hub",
-  logLevel: "info",
-  capabilities: {
+// -------------------------
+// Retry automatique sur éléments
+// -------------------------
+async function waitForElement(
+  driver,
+  selector,
+  timeout = 15000,
+  interval = 500
+) {
+  const start = Date.now();
+  while (Date.now() - start < timeout) {
+    try {
+      const el = await driver.$(selector);
+      if (await el.isExisting()) return el;
+    } catch {}
+    await driver.pause(interval);
+  }
+  throw new Error(`Element not found: ${selector}`);
+}
+
+// -------------------------
+// Action avec log + screenshot
+// -------------------------
+async function action(driver, testContext, actionName, selector, callback) {
+  console.log(`[ACTION] ${actionName}`);
+  const el = await waitForElement(driver, selector);
+  await callback(el);
+
+  const screenshotName = `${Date.now()}_${actionName.replace(/\s+/g, "_")}`;
+  const filepath = path.join(screenshotsDir, `${screenshotName}.png`);
+  const base64 = await driver.takeScreenshot();
+  fs.writeFileSync(filepath, base64, "base64");
+  console.log(`[SCREENSHOT] ${screenshotName} -> ${filepath}`);
+  addContext(testContext, { title: actionName, value: filepath });
+}
+
+// -------------------------
+// Configuration dynamique
+// -------------------------
+const PLATFORM = process.env.PLATFORM || "Android";
+const APP_PACKAGE = process.env.ANDROID_APP_PACKAGE;
+
+let capabilities = {};
+if (PLATFORM === "Android") {
+  capabilities = {
     platformName: "Android",
-    deviceName: process.env.DEVICE_NAME || "emulator-5554",
+    deviceName: process.env.ANDROID_DEVICE,
     automationName: "UiAutomator2",
-    app:
-      process.env.APP_PATH ||
-      path.resolve(__dirname, "../mda_test_release_1_0_3.apk"),
-    appPackage: process.env.APP_PACKAGE || "com.example.app",
-    appActivity: process.env.APP_ACTIVITY || "com.example.app.MainActivity",
+    app: path.resolve(__dirname, "../" + process.env.ANDROID_APP_PATH),
+    appPackage: APP_PACKAGE,
+    appActivity: process.env.ANDROID_APP_ACTIVITY,
     autoGrantPermissions: true,
     newCommandTimeout: 300,
     noReset: false,
-  },
+  };
+} else if (PLATFORM === "iOS") {
+  capabilities = {
+    platformName: "iOS",
+    deviceName: process.env.IOS_DEVICE,
+    platformVersion: process.env.IOS_PLATFORM_VERSION,
+    automationName: "XCUITest",
+    app: path.resolve(__dirname, "../" + process.env.IOS_APP_PATH),
+    bundleId: process.env.IOS_BUNDLE_ID,
+    newCommandTimeout: 300,
+    noReset: false,
+  };
+}
+
+const opts = {
+  hostname: process.env.APPIUM_HOST,
+  port: parseInt(process.env.APPIUM_PORT, 10),
+  path: process.env.APPIUM_PATH,
+  logLevel: "debug",
+  capabilities,
 };
 
-describe("Flutter Release E2E Mobile Android", function () {
-  this.timeout(600000); // 10 min
+// -------------------------
+// Tests
+// -------------------------
+describe(`${PLATFORM} E2E Mobile Tests`, function () {
+  this.timeout(600000);
   let driver;
 
-  async function takeScreenshot(name) {
-    const base64 = await driver.takeScreenshot();
-    const filepath = path.join(screenshotsDir, `${name}.png`);
-    fs.writeFileSync(filepath, base64, "base64");
-    addContext(this, { title: "Screenshot", value: filepath });
-  }
-
-  // -------------------------
-  // Hooks
-  // -------------------------
   before(async () => {
     driver = await remote(opts);
   });
@@ -53,103 +103,152 @@ describe("Flutter Release E2E Mobile Android", function () {
   });
 
   beforeEach(async () => {
-    await driver.reset(); // reset app avant chaque test
-  });
-
-  afterEach(async function () {
-    const testName = this.currentTest.title.replace(/\s+/g, "_");
-    await takeScreenshot.bind(this)(testName);
+    if (PLATFORM === "Android") {
+      await driver.terminateApp(APP_PACKAGE);
+      await driver.activateApp(APP_PACKAGE);
+    } else if (PLATFORM === "iOS") {
+      await driver.terminateApp(process.env.IOS_BUNDLE_ID);
+      await driver.launchApp(process.env.IOS_BUNDLE_ID);
+    }
   });
 
   // -------------------------
-  // Scénarios Login
+  // Login
   // -------------------------
-  describe("Scénarios Login", () => {
-    it("Login avec admin valide", async function () {
-      const username = await driver.$(
-        '//*[@resource-id="com.example.app:id/username_input"]'
+  describe("Login", () => {
+    it("Login admin valide", async function () {
+      await action(
+        driver,
+        this,
+        "Remplir username",
+        `//*[@resource-id="${APP_PACKAGE}:id/username_input"]`,
+        (el) => el.setValue("admin")
       );
-      const password = await driver.$(
-        '//*[@resource-id="com.example.app:id/password_input"]'
+      await action(
+        driver,
+        this,
+        "Remplir mot de passe",
+        `//*[@resource-id="${APP_PACKAGE}:id/password_input"]`,
+        (el) => el.setValue("admin123")
       );
-      const loginBtn = await driver.$('//*[@text="Login"]');
-
-      await username.setValue("admin");
-      await password.setValue("admin123");
-      await loginBtn.click();
-
-      const dashboard = await driver.$('//*[contains(@text, "Dashboard")]');
-      assert.isNotNull(await dashboard.isExisting());
+      await action(driver, this, "Cliquer Login", '//*[@text="Login"]', (el) =>
+        el.click()
+      );
+      await action(
+        driver,
+        this,
+        "Vérifier Dashboard",
+        '//*[contains(@text, "Dashboard")]',
+        async (el) => assert.isNotNull(await el.isExisting())
+      );
     });
 
     it("Login avec mauvais mot de passe", async function () {
-      const username = await driver.$(
-        '//*[@resource-id="com.example.app:id/username_input"]'
+      await action(
+        driver,
+        this,
+        "Remplir username",
+        `//*[@resource-id="${APP_PACKAGE}:id/username_input"]`,
+        (el) => el.setValue("admin")
       );
-      const password = await driver.$(
-        '//*[@resource-id="com.example.app:id/password_input"]'
+      await action(
+        driver,
+        this,
+        "Remplir mauvais mot de passe",
+        `//*[@resource-id="${APP_PACKAGE}:id/password_input"]`,
+        (el) => el.setValue("wrongPassword")
       );
-      const loginBtn = await driver.$('//*[@text="Login"]');
-
-      await username.setValue("admin");
-      await password.setValue("wrongPassword");
-      await loginBtn.click();
-
-      const errorMsg = await driver.$(
-        '//*[contains(@text, "Invalid credentials")]'
+      await action(driver, this, "Cliquer Login", '//*[@text="Login"]', (el) =>
+        el.click()
       );
-      assert.isNotNull(await errorMsg.isExisting());
+      await action(
+        driver,
+        this,
+        "Vérifier message erreur",
+        '//*[contains(@text, "Invalid credentials")]',
+        async (el) => assert.isNotNull(await el.isExisting())
+      );
     });
   });
 
   // -------------------------
-  // Scénarios Register
+  // Register
   // -------------------------
-  describe("Scénarios Register", () => {
+  describe("Register", () => {
     it("Register utilisateur valide", async function () {
-      const username = await driver.$(
-        '//*[@resource-id="com.example.app:id/register_username"]'
+      await action(
+        driver,
+        this,
+        "Remplir username",
+        `//*[@resource-id="${APP_PACKAGE}:id/register_username"]`,
+        (el) => el.setValue("newUser")
       );
-      const email = await driver.$(
-        '//*[@resource-id="com.example.app:id/register_email"]'
+      await action(
+        driver,
+        this,
+        "Remplir email",
+        `//*[@resource-id="${APP_PACKAGE}:id/register_email"]`,
+        (el) => el.setValue("newuser@test.com")
       );
-      const password = await driver.$(
-        '//*[@resource-id="com.example.app:id/register_password"]'
+      await action(
+        driver,
+        this,
+        "Remplir mot de passe",
+        `//*[@resource-id="${APP_PACKAGE}:id/register_password"]`,
+        (el) => el.setValue("password123")
       );
-      const submit = await driver.$('//*[@text="Register"]');
-
-      await username.setValue("newUser");
-      await email.setValue("newuser@test.com");
-      await password.setValue("password123");
-      await submit.click();
-
-      const successMsg = await driver.$(
-        '//*[contains(@text, "Registration successful")]'
+      await action(
+        driver,
+        this,
+        "Cliquer Register",
+        '//*[@text="Register"]',
+        (el) => el.click()
       );
-      assert.isNotNull(await successMsg.isExisting());
+      await action(
+        driver,
+        this,
+        "Vérifier succès",
+        '//*[contains(@text, "Registration successful")]',
+        async (el) => assert.isNotNull(await el.isExisting())
+      );
     });
 
     it("Register avec email déjà existant", async function () {
-      const username = await driver.$(
-        '//*[@resource-id="com.example.app:id/register_username"]'
+      await action(
+        driver,
+        this,
+        "Remplir username existant",
+        `//*[@resource-id="${APP_PACKAGE}:id/register_username"]`,
+        (el) => el.setValue("admin")
       );
-      const email = await driver.$(
-        '//*[@resource-id="com.example.app:id/register_email"]'
+      await action(
+        driver,
+        this,
+        "Remplir email existant",
+        `//*[@resource-id="${APP_PACKAGE}:id/register_email"]`,
+        (el) => el.setValue("admin@test.com")
       );
-      const password = await driver.$(
-        '//*[@resource-id="com.example.app:id/register_password"]'
+      await action(
+        driver,
+        this,
+        "Remplir mot de passe",
+        `//*[@resource-id="${APP_PACKAGE}:id/register_password"]`,
+        (el) => el.setValue("1234")
       );
-      const submit = await driver.$('//*[@text="Register"]');
-
-      await username.setValue("admin");
-      await email.setValue("admin@test.com");
-      await password.setValue("1234");
-      await submit.click();
-
-      const errorMsg = await driver.$(
-        '//*[contains(@text, "Email already exists")]'
+      await action(
+        driver,
+        this,
+        "Cliquer Register",
+        '//*[@text="Register"]',
+        (el) => el.click()
       );
-      assert.isNotNull(await errorMsg.isExisting());
+      await action(
+        driver,
+        this,
+        "Vérifier message erreur",
+        '//*[contains(@text, "Email already exists")]',
+        async (el) => assert.isNotNull(await el.isExisting())
+      );
     });
   });
 
@@ -159,51 +258,74 @@ describe("Flutter Release E2E Mobile Android", function () {
   describe("Fonctionnalités critiques", () => {
     beforeEach(async () => {
       // Login admin avant chaque test critique
-      const username = await driver.$(
-        '//*[@resource-id="com.example.app:id/username_input"]'
+      await action(
+        driver,
+        this,
+        "Login admin",
+        `//*[@resource-id="${APP_PACKAGE}:id/username_input"]`,
+        (el) => el.setValue("admin")
       );
-      const password = await driver.$(
-        '//*[@resource-id="com.example.app:id/password_input"]'
+      await action(
+        driver,
+        this,
+        "Password admin",
+        `//*[@resource-id="${APP_PACKAGE}:id/password_input"]`,
+        (el) => el.setValue("admin123")
       );
-      const loginBtn = await driver.$('//*[@text="Login"]');
-
-      await username.setValue("admin");
-      await password.setValue("admin123");
-      await loginBtn.click();
+      await action(driver, this, "Cliquer Login", '//*[@text="Login"]', (el) =>
+        el.click()
+      );
     });
 
     it("Paiement utilisateur", async function () {
-      const paymentAmount = await driver.$(
-        '//*[@resource-id="com.example.app:id/payment_amount"]'
+      await action(
+        driver,
+        this,
+        "Remplir montant paiement",
+        `//*[@resource-id="${APP_PACKAGE}:id/payment_amount"]`,
+        (el) => el.setValue("100")
       );
-      const submit = await driver.$('//*[@text="Pay"]');
-
-      await paymentAmount.setValue("100");
-      await submit.click();
-
-      const successMsg = await driver.$(
-        '//*[contains(@text, "Payment successful")]'
+      await action(driver, this, "Cliquer Pay", '//*[@text="Pay"]', (el) =>
+        el.click()
       );
-      assert.isNotNull(await successMsg.isExisting());
+      await action(
+        driver,
+        this,
+        "Vérifier succès paiement",
+        '//*[contains(@text, "Payment successful")]',
+        async (el) => assert.isNotNull(await el.isExisting())
+      );
     });
 
     it("Transfert d'argent", async function () {
-      const recipient = await driver.$(
-        '//*[@resource-id="com.example.app:id/transfer_recipient"]'
+      await action(
+        driver,
+        this,
+        "Remplir destinataire",
+        `//*[@resource-id="${APP_PACKAGE}:id/transfer_recipient"]`,
+        (el) => el.setValue("guest")
       );
-      const amount = await driver.$(
-        '//*[@resource-id="com.example.app:id/transfer_amount"]'
+      await action(
+        driver,
+        this,
+        "Remplir montant transfert",
+        `//*[@resource-id="${APP_PACKAGE}:id/transfer_amount"]`,
+        (el) => el.setValue("50")
       );
-      const submit = await driver.$('//*[@text="Transfer"]');
-
-      await recipient.setValue("guest");
-      await amount.setValue("50");
-      await submit.click();
-
-      const successMsg = await driver.$(
-        '//*[contains(@text, "Transfer completed")]'
+      await action(
+        driver,
+        this,
+        "Cliquer Transfer",
+        '//*[@text="Transfer"]',
+        (el) => el.click()
       );
-      assert.isNotNull(await successMsg.isExisting());
+      await action(
+        driver,
+        this,
+        "Vérifier succès transfert",
+        '//*[contains(@text, "Transfer completed")]',
+        async (el) => assert.isNotNull(await el.isExisting())
+      );
     });
   });
 });
